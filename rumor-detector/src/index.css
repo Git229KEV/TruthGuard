@@ -913,7 +913,7 @@ p {
 /* Premium Model Result Cards */
 .model-results-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: 1fr;
   gap: 1.5rem;
   margin-top: 2rem;
   width: 100%;
@@ -1039,10 +1039,10 @@ p {
 }
 
 .report-content {
-  font-size: 0.9rem;
-  line-height: 1.6;
+  font-size: 0.95rem;
+  line-height: 1.7;
   color: var(--text-secondary);
-  white-space: pre-wrap;
+  white-space: normal;
   text-align: justify;
 }
 
@@ -1056,7 +1056,7 @@ p {
 
 @media (max-width: 1200px) {
   .model-results-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
   }
 }
 
