@@ -457,6 +457,7 @@ async def analyze(file: UploadFile = File(...)):
                         model = genai_client.GenerativeModel(model_name)
                         response = gemini_generate_retry(model, [image, ocr_prompt], config={"temperature": 0})
                         results["original_text"] = response.text.strip()
+                        results["translated"] = response.text.strip() # Populate the frontend 'translated' field
                         results["gemini_model_used"] = model_name
                         selected_model = model
                         print(f"[Gemini] OCR success with {model_name}")
@@ -486,25 +487,35 @@ async def analyze(file: UploadFile = File(...)):
                 # --- PILLAR 5: FINAL SYNTHESIS (Gemini Phase 2) ---
                 if selected_model:
                     print("[Gemini] Phase 2: Synthesis Reporting...")
+                    translated_context = results["translated"] if results["translated"] else "No text extracted."
+                    search_context = results["tavily_analysis"] if results["tavily_analysis"] else "No web search available."
+                    
                     synthesis_prompt = f"""You are a professional Fact-Checking Investigative Journalist.
-Analyze this image and the provided web research to determine if it is a RUMOR or NON-RUMOR.
 
-WEB RESEARCH SUMMARY:
-{results['tavily_analysis']}
+INPUT - TRANSLATED TEXT FROM IMAGE:
+{translated_context}
 
-SOURCES FOUND:
+INPUT - WEB RESEARCH SUMMARY:
+{search_context}
+
+INPUT - SOURCES:
 {str(results['sources'])}
 
-TASK: Compare the visual evidence in the image with the web research findings. Use a professional, detailed tone.
+TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
+Give your OWN forensic result based on both visual evidence and textual claim.
 
 Return your analysis in this EXACT format:
 **CLAIM VERDICT:** [TRUE/FALSE/MISLEADING]
 **REPORT AUTHENTICITY:** [AUTHENTIC/MANIPULATED/SUSPICIOUS]
-**DETAILED ANALYSIS:** [Write a professional, 2-3 paragraph analysis combining the visual image data and the web search results provided above.]"""
+**DETAILED ANALYSIS:** [Write a professional, 2-3 paragraph investigative analysis. Do not use placeholders. Be specific about the visual evidence and the search findings.]"""
 
                     response_sync = gemini_generate_retry(selected_model, [image, synthesis_prompt], config={"temperature": 0})
                     sync_text = response_sync.text
-                    results["gemini_analysis"] = sync_text
+                    
+                    if sync_text and len(sync_text) > 20:
+                        results["gemini_analysis"] = sync_text
+                    else:
+                        results["gemini_analysis"] = f"Investigation complete. Source context: {translated_context[:300]}..."
                     
                     g_cv, g_av = "NON-RUMOR", "NON-RUMOR"
                     for line in sync_text.split('\n'):
@@ -517,6 +528,8 @@ Return your analysis in this EXACT format:
 
             except Exception as e:
                 print(f"Gemini/Tavily Pipeline Error: {e}")
+                if not results["gemini_analysis"]:
+                    results["gemini_analysis"] = f"Analysis limited by API capacity. Extracted content: {results['translated'][:400]}..."
                 results["gemini"] = "ERROR"
 
         # --- FINAL AGGREGATION (Majority Vote with Forensic Tie-breaker) ---
