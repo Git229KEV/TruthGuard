@@ -913,7 +913,7 @@ p {
 /* Premium Model Result Cards */
 .model-results-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 1.5rem;
   margin-top: 2rem;
   width: 100%;
@@ -1056,7 +1056,7 @@ p {
 
 @media (max-width: 1200px) {
   .model-results-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
