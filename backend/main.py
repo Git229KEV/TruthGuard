@@ -389,19 +389,19 @@ async def analyze(file: UploadFile = File(...)):
             "text": "UNAVAILABLE",
             "tavily": "UNAVAILABLE",
             "gemini": "UNAVAILABLE",
-            "final": "UNAVAILABLE",
+            "final": "NON-RUMOR",
+            "sources": [],
+            "confidence": 0.5,
+            "gemini_analysis": "",
+            "tavily_analysis": "",
             "translated": "",
             "original_text": "",
-            "sources": [],
-            "mode": "full",
-            "confidence": 0.0,
-            "tavily_analysis": "",
-            "gemini_analysis": "",
             "claim_verdict": "NON-RUMOR",
-            "report_verdict": "NON-RUMOR"
+            "report_verdict": "NON-RUMOR",
+            "gemini_model_used": "N/A"
         }
         
-        # 🟢 PILLAR 1: SigLIP (LOCAL)
+        # --- PILLAR 1: VISUAL FORENSICS (SigLIP) ---
         visual_display = "UNAVAILABLE"
         if torch and siglip_model and siglip_processor:
             try:
@@ -410,7 +410,6 @@ async def analyze(file: UploadFile = File(...)):
                     logits = siglip_model(**inputs).logits
                     probs = torch.softmax(logits, dim=1)
                     pred = probs.argmax().item()
-                
                 raw_vis = siglip_model.config.id2label[pred] if hasattr(siglip_model.config, 'id2label') else str(pred)
                 visual_display = "RUMOR" if any(x in raw_vis.lower() for x in ["fake", "false", "rumor"]) else "NON-RUMOR"
                 results["visual"] = visual_display
@@ -418,140 +417,17 @@ async def analyze(file: UploadFile = File(...)):
                 print(f"[SigLIP] {visual_display}")
             except Exception as e:
                 print(f"SigLIP Error: {e}")
-        
-        # 🔵 PILLAR 3, 4: GEMINI WITH GOOGLE SEARCH GROUNDING
-        gemini_verdict = "UNAVAILABLE"
-        claim_verdict = "NON-RUMOR"
-        report_verdict = "NON-RUMOR"
-        
-        if genai_client:
-            try:
-                print("[Gemini] Running analysis with Google Search Grounding...")
-                
-                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
-                model = None
-                selected_model = None
-                
-                for model_name in model_names:
-                    try:
-                        model = genai_client.GenerativeModel(model_name)
-                        response = gemini_generate_retry(model, "test", config={"max_output_tokens": 10, "temperature": 0})
-                        selected_model = model_name
-                        print(f"[Gemini] Using model: {model_name}")
-                        break
-                    except Exception:
-                        continue
-                
-                if not selected_model:
-                    raise Exception("No working Gemini model found")
-                
-                fact_check_prompt = """You are a professional fact-checker analyzing a news image.
 
-TASK 1: Extract any visible text from the image and translate non-English text to English.
-TASK 2: Evaluate the image for signs of manipulation.
-TASK 3: Evaluate the CLAIM (text content) for truthfulness.
-
-Return your analysis in this EXACT format:
-**EXTRACTED TEXT:** [The text you extracted from the image]
-**CLAIM VERDICT:** [TRUE/FALSE/MISLEADING/UNVERIFIABLE]
-**REPORT AUTHENTICITY:** [AUTHENTIC/MANIPULATED/SUSPICIOUS]
-**DETAILED ANALYSIS:** [Your analysis]"""
-                
-                response = model.generate_content(
-                    [{"mime_type": "image/jpeg", "data": img_base64}, fact_check_prompt],
-                    generation_config={"temperature": 0}
-                )
-                
-                response_text = response.text
-                claim_verdict = "NON-RUMOR"
-                report_verdict = "NON-RUMOR"
-                extracted_text = ""
-                detailed_paragraph = ""
-                
-                # Robust parsing for structured fields and detailed analysis paragraph
-                if "**EXTRACTED TEXT:**" in response_text:
-                    parts = response_text.split("**EXTRACTED TEXT:**")
-                    if len(parts) > 1:
-                        extracted_text = parts[1].split("**")[0].strip().strip("[]")
-
-                lines = response_text.split('\n')
-                for line in lines:
-                    if 'CLAIM VERDICT:' in line.upper():
-                        claim_text = line.split('CLAIM VERDICT:')[1].strip().upper()
-                        if 'FALSE' in claim_text or 'FAKE' in claim_text or 'MISLEADING' in claim_text:
-                            claim_verdict = "RUMOR"
-                        elif 'TRUE' in claim_text or 'VERIFIED' in claim_text:
-                            claim_verdict = "NON-RUMOR"
-                    if 'REPORT AUTHENTICITY:' in line.upper():
-                        auth_text = line.split('REPORT AUTHENTICITY:')[1].strip().upper()
-                        if 'MANIPULATED' in auth_text or 'SUSPICIOUS' in auth_text or 'FAKE' in auth_text:
-                            report_verdict = "RUMOR"
-                        elif 'AUTHENTIC' in auth_text or 'GENUINE' in auth_text:
-                            report_verdict = "NON-RUMOR"
-                
-                if "**DETAILED ANALYSIS:**" in response_text:
-                    detailed_paragraph = response_text.split("**DETAILED ANALYSIS:**")[1].strip()
-                    # Remove any trailing structural leftovers if present
-                    detailed_paragraph = re.sub(r'\*\*.*?\*\*.*$', '', detailed_paragraph, flags=re.DOTALL).strip()
-                else:
-                    # Fallback: remove the known labels from the full text
-                    detailed_paragraph = response_text
-                    for label in ["**EXTRACTED TEXT:**", "**CLAIM VERDICT:**", "**REPORT AUTHENTICITY:**", "**DETAILED ANALYSIS:**"]:
-                        detailed_paragraph = detailed_paragraph.replace(label, "")
-                    detailed_paragraph = detailed_paragraph.strip()
-
-                gemini_verdict = "RUMOR" if (claim_verdict == "RUMOR" or report_verdict == "RUMOR") else "NON-RUMOR"
-                
-                grounding_chunks = []
-                try:
-                    if hasattr(response, 'grounding_metadata') and response.grounding_metadata:
-                        chunks = response.grounding_metadata.get('grounding_chunks', [])
-                        for chunk in chunks[:5]:
-                            web = chunk.get('web', {})
-                            if web.get('uri'):
-                                grounding_chunks.append({
-                                    "title": web.get('title', 'Source'),
-                                    "url": web.get('uri')
-                                })
-                except Exception as e:
-                    print(f"[Gemini] Grounding metadata error: {e}")
-                
-                results["sources"] = grounding_chunks
-                results["gemini"] = gemini_verdict
-                results["gemini_analysis"] = detailed_paragraph
-                results["gemini_model_used"] = selected_model
-                results["claim_verdict"] = claim_verdict
-                results["report_verdict"] = report_verdict
-                results["original_text"] = extracted_text
-                
-                print(f"[Gemini] Claim: {claim_verdict}, Report: {report_verdict} -> Final: {gemini_verdict}")
-                
-            except Exception as e:
-                print(f"Gemini Error: {e}")
-                err_str = str(e).lower()
-                if "429" in err_str or "quota" in err_str:
-                    results["gemini"] = "QUOTA EXCEEDED"
-                    results["gemini_analysis"] = "Google Gemini API quota exceeded."
-                else:
-                    results["gemini"] = "ERROR"
-                    results["gemini_analysis"] = f"Failed: {str(e)}"
-                gemini_verdict = "UNAVAILABLE"
-
-        # 🔵 PILLAR 2: XLM-R (LOCAL - TEXT CLASSIFICATION) - INDEPENDENT
-        extracted_text = ""
+        # --- PILLAR 2: TEXTUAL FORENSICS (XLM-R) ---
         text_display = "UNAVAILABLE"
-        
+        extracted_text_ocr = ""
         if OCR_AVAILABLE:
             try:
-                extracted_text = pytesseract.image_to_string(image)
-                extracted_text = re.sub(r'\s+', ' ', extracted_text).strip()[:500]
-                print(f"[OCR] Extracted: {extracted_text[:100]}...")
-            except Exception as e:
-                print(f"[OCR] Error: {e}")
-                extracted_text = ""
+                extracted_text_ocr = pytesseract.image_to_string(image)
+                extracted_text_ocr = re.sub(r'\s+', ' ', extracted_text_ocr).strip()[:500]
+            except: pass
         
-        text_input = extracted_text if extracted_text else "This is a news article containing information about current events and public announcements"
-        
+        text_input = extracted_text_ocr if extracted_text_ocr else "This is a news article about current events"
         if torch and xlm_model and xlm_tokenizer:
             try:
                 inputs_xlm = xlm_tokenizer(text_input, return_tensors="pt", truncation=True, padding=True, max_length=512).to(device)
@@ -560,135 +436,100 @@ Return your analysis in this EXACT format:
                     text_probs = torch.softmax(logits, dim=1)
                     text_pred = text_probs.argmax().item()
                     confidence = text_probs.max().item()
-
                 raw_txt = xlm_model.config.id2label[text_pred] if hasattr(xlm_model.config, 'id2label') else str(text_pred)
-                
-                if "0" in raw_txt or "fake" in raw_txt.lower() or "rumor" in raw_txt.lower() or "false" in raw_txt.lower():
-                    text_display = "RUMOR"
-                elif "1" in raw_txt or "real" in raw_txt.lower() or "true" in raw_txt.lower() or "non_rumor" in raw_txt.lower():
-                    text_display = "NON-RUMOR"
-                else:
-                    text_display = "NON-RUMOR"
-                
+                text_display = "RUMOR" if "0" in raw_txt or "fake" in raw_txt.lower() else "NON-RUMOR"
                 results["text"] = text_display
                 results["text_confidence"] = float(confidence)
-                print(f"[XLM-R] Label:{raw_txt} -> {text_display} (conf:{confidence:.2%})")
+                print(f"[XLM-R] {text_display}")
             except Exception as e:
-                print(f"XLM-R Error: {e}")
-                results["text"] = "ERROR"
-                text_display = "ERROR"
+                print(f"XLM Error: {e}")
 
-        # 📑 PILLAR 3: TAVILY (WEB RESEARCH) - INDEPENDENT
-        # Sanitize search query: remove placeholders and brackets
-        raw_query = results["original_text"]
-        clean_query = re.sub(r'\[.*?\]', '', raw_query).strip()
-        clean_query = clean_query.replace("**", "").replace('"', '').strip()
-        
-        if len(clean_query) < 5 or "no text" in clean_query.lower():
-            search_command = "latest news fact check verification"
-        else:
-            search_command = clean_query[:300] # Limit length for API safety
-            
-        print(f"[Tavily] Query: {search_command}")
-        verdict_tav = "UNAVAILABLE"
-        
-        if tavily_client:
+        # --- PILLAR 3: VISION & OCR (Gemini Phase 1) ---
+        if genai_client:
             try:
-                cache_key = search_command.lower().strip()
-                if cache_key in tavily_cache:
-                    print(f"[Tavily] Using cached result for: {search_command[:80]}...")
-                    tav_res = tavily_cache[cache_key]
-                else:
-                    print(f"[Tavily] Searching: {search_command[:80]}...")
-                    tav_res = tavily_client.search(
-                        query=search_command, 
-                        search_depth="advanced", 
-                        include_answer="advanced", 
-                        max_results=5
-                    )
-                    tavily_cache[cache_key] = tav_res
+                print("[Gemini] Phase 1: OCR and Initial Analysis...")
+                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"]
+                ocr_prompt = "Extract all text from this image accurately. If there is non-English text, translate it to English. Also, provide a 1-sentence summary of what is happening in the image."
                 
-                tav_sources = [{"title": r.get("title"), "url": r.get("url")} for r in tav_res.get("results", [])]
-                if not results["sources"]:
-                    results["sources"] = tav_sources
-                
-                tav_answer = tav_res.get("answer", "")
-                tav_context = " ".join([r.get("content", "") for r in tav_res.get("results", [])[:3]])
-                
-                combined_text = (tav_answer + " " + tav_context).lower()
-                
-                strong_rumor = ["false claim", "fake news", "hoax", "misinformation", "debunked", "fabricated", 
-                               "manipulated image", "ai-generated", "outdated", "satire presented as news"]
-                weak_rumor = ["misleading", "unverified", "no evidence", "cannot verify", "unconfirmed", "clickbait"]
-                strong_fact = ["confirmed by", "official statement", "verified", "true", "according to official",
-                              "government said", "police confirmed", "hospital confirmed", "authorities say"]
-                weak_fact = ["reported", "according to", "sources say", "apparently", "unclear"]
-                
-                rumor_score = 0
-                fact_score = 0
-                
-                for phrase in strong_rumor:
-                    if phrase in combined_text:
-                        rumor_score += 2
-                        
-                for phrase in weak_rumor:
-                    if phrase in combined_text:
-                        rumor_score += 1
-                        
-                for phrase in strong_fact:
-                    if phrase in combined_text:
-                        fact_score += 2
-                        
-                for phrase in weak_fact:
-                    if phrase in combined_text:
-                        fact_score += 1
-                
-                if not tav_answer or len(tav_answer) < 15 or "no relevant" in tav_answer.lower():
-                    verdict_tav = "NON-RUMOR"
-                elif rumor_score > fact_score + 1:
-                    verdict_tav = "RUMOR"
-                elif fact_score > rumor_score + 1:
-                    verdict_tav = "NON-RUMOR"
-                elif rumor_score > fact_score:
-                    verdict_tav = "RUMOR"
-                elif rumor_score == fact_score and rumor_score > 0:
-                    verdict_tav = "NON-RUMOR"
-                else:
-                    verdict_tav = "NON-RUMOR"
-                
-                results["tavily"] = verdict_tav
-                results["tavily_analysis"] = tav_answer if tav_answer else "Web search completed. Review sources."
-                print(f"[Tavily] R-score:{rumor_score} F-score:{fact_score} -> {verdict_tav}")
+                selected_model = None
+                for model_name in model_names:
+                    try:
+                        model = genai_client.GenerativeModel(model_name)
+                        response = gemini_generate_retry(model, [image, ocr_prompt], config={"temperature": 0})
+                        results["original_text"] = response.text.strip()
+                        results["gemini_model_used"] = model_name
+                        selected_model = model
+                        print(f"[Gemini] OCR success with {model_name}")
+                        break
+                    except: continue
+
+                # --- PILLAR 4: WEB RESEARCH (Tavily) ---
+                if tavily_client:
+                    print("[Tavily] Running independent web research...")
+                    raw_query = results["original_text"]
+                    clean_query = re.sub(r'\[.*?\]', '', raw_query).strip()
+                    clean_query = clean_query.replace("**", "").replace('"', '').strip()
+                    search_query = clean_query[:300] if len(clean_query) > 10 else "latest fact check " + clean_query
+                    if not search_query.strip(): search_query = "latest news verification"
+                    
+                    tav_res = tavily_client.search(query=search_query, search_depth="advanced", include_answer="advanced", max_results=5)
+                    results["sources"] = [{"title": r.get("title"), "url": r.get("url")} for r in tav_res.get("results", [])]
+                    results["tavily_analysis"] = tav_res.get("answer", "Web search completed.")
+                    
+                    # Independent Scoring
+                    combined_tav = (results["tavily_analysis"] + " " + " ".join([r.get("content", "") for r in tav_res.get("results", [])[:3]])).lower()
+                    r_score = sum(2 for p in ["false claim", "fake news", "hoax", "misinformation", "debunked", "fabricated"] if p in combined_tav)
+                    f_score = sum(2 for p in ["confirmed by", "official statement", "verified", "true"] if p in combined_tav)
+                    results["tavily"] = "RUMOR" if r_score > f_score + 1 else "NON-RUMOR"
+                    print(f"[Tavily] Verdict: {results['tavily']}")
+
+                # --- PILLAR 5: FINAL SYNTHESIS (Gemini Phase 2) ---
+                if selected_model:
+                    print("[Gemini] Phase 2: Synthesis Reporting...")
+                    synthesis_prompt = f"""You are a professional Fact-Checking Investigative Journalist.
+Analyze this image and the provided web research to determine if it is a RUMOR or NON-RUMOR.
+
+WEB RESEARCH SUMMARY:
+{results['tavily_analysis']}
+
+SOURCES FOUND:
+{str(results['sources'])}
+
+TASK: Compare the visual evidence in the image with the web research findings. Use a professional, detailed tone.
+
+Return your analysis in this EXACT format:
+**CLAIM VERDICT:** [TRUE/FALSE/MISLEADING]
+**REPORT AUTHENTICITY:** [AUTHENTIC/MANIPULATED/SUSPICIOUS]
+**DETAILED ANALYSIS:** [Write a professional, 2-3 paragraph analysis combining the visual image data and the web search results provided above.]"""
+
+                    response_sync = gemini_generate_retry(selected_model, [image, synthesis_prompt], config={"temperature": 0})
+                    sync_text = response_sync.text
+                    results["gemini_analysis"] = sync_text
+                    
+                    g_cv, g_av = "NON-RUMOR", "NON-RUMOR"
+                    for line in sync_text.split('\n'):
+                        if 'CLAIM VERDICT:' in line.upper() and any(x in line.upper() for x in ["FALSE", "FAKE", "MISLEADING"]): g_cv = "RUMOR"
+                        if 'REPORT AUTHENTICITY:' in line.upper() and any(x in line.upper() for x in ["MANIPULATED", "SUSPICIOUS", "FAKE"]): g_av = "RUMOR"
+                    
+                    results["gemini"] = "RUMOR" if (g_cv == "RUMOR" or g_av == "RUMOR") else "NON-RUMOR"
+                    results["claim_verdict"], results["report_verdict"] = g_cv, g_av
+                    print(f"[Gemini] Synthesis: {results['gemini']}")
+
             except Exception as e:
-                print(f"Tavily Error: {e}")
-                results["tavily"] = "ERROR"
-                results["tavily_analysis"] = f"Search failed: {str(e)}"
-                verdict_tav = "ERROR"
+                print(f"Gemini/Tavily Pipeline Error: {e}")
+                results["gemini"] = "ERROR"
 
-        # 🗳️ FINAL MAJORITY DECISION - RESPECTING INDIVIDUAL MODEL OUTPUTS
-        verdicts = {
-            "visual": visual_display,
-            "text": text_display,
-            "tavily": verdict_tav,
-            "gemini": gemini_verdict
-        }
-        
+        # --- FINAL AGGREGATION (Majority Vote with Forensic Tie-breaker) ---
+        verdicts = {k: results[k] for k in ["visual", "text", "tavily", "gemini"]}
         valid_votes = [v for v in verdicts.values() if v in ["RUMOR", "NON-RUMOR"]]
-        r_count = valid_votes.count("RUMOR")
-        nr_count = valid_votes.count("NON-RUMOR")
-        total_valid = len(valid_votes)
-
-        if r_count > nr_count:
-            majority_verdict = "RUMOR"
-        elif nr_count > r_count:
-            majority_verdict = "NON-RUMOR"
-        else:
-            majority_verdict = text_display if text_display in ["RUMOR", "NON-RUMOR"] else "NON-RUMOR"
-
-        results["final"] = majority_verdict
-        results["confidence"] = float(max(r_count, nr_count) / total_valid) if total_valid > 0 else 0.5
-
-        print(f"[FINAL] R:{r_count} NR:{nr_count} -> {majority_verdict}")
+        r_count, nr_count = valid_votes.count("RUMOR"), valid_votes.count("NON-RUMOR")
+        
+        if r_count > nr_count: results["final"] = "RUMOR"
+        elif nr_count > r_count: results["final"] = "NON-RUMOR"
+        else: results["final"] = results["visual"] if results["visual"] in ["RUMOR", "NON-RUMOR"] else "NON-RUMOR"
+        
+        results["confidence"] = float(max(r_count, nr_count) / len(valid_votes)) if valid_votes else 0.5
+        print(f"[FINAL RESULT] {results['final']} (R:{r_count} NR:{nr_count})")
         return results
         
     except Exception as e:
