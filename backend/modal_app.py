@@ -352,29 +352,42 @@ INPUT - SOURCES:
 TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
 Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
 
-                # Re-use the best model from Phase 1
-                model_to_use = results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "gemini-3-flash-preview"
-                response_sync = genai_client.models.generate_content(
-                    model=model_to_use,
-                    contents=Content(parts=[
-                        Part(inline_data={"mime_type": "image/jpeg", "data": img_base64}),
-                        Part(text=synthesis_prompt)
-                    ]),
-                    config={
-                        "system_instruction": system_instruction,
-                        "temperature": 0, 
-                        "max_output_tokens": 2048
-                    }
-                )
+                # Re-implement Model Fallback loop for Synthesis Phase
+                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-1.5-pro", "gemini-1.5-flash"]
+                sync_text = ""
+                selected_model_final = "N/A"
                 
-                sync_text = response_sync.text
-                if sync_text and len(sync_text) > 20:
-                    results["gemini_analysis"] = sync_text
-                else:
-                    results["gemini_analysis"] = f"Investigation complete. Extracted Text: {translated_context[:300]}..."
+                for model_name in model_names:
+                    try:
+                        print(f"[Gemini] Synthesis attempting with {model_name}...")
+                        response_sync = genai_client.models.generate_content(
+                            model=model_name,
+                            contents=Content(parts=[
+                                Part(inline_data={"mime_type": "image/jpeg", "data": img_base64}),
+                                Part(text=synthesis_prompt)
+                            ]),
+                            config={
+                                "system_instruction": system_instruction,
+                                "temperature": 0, 
+                                "max_output_tokens": 2048
+                            }
+                        )
+                        sync_text = response_sync.text
+                        if sync_text and len(sync_text) > 20:
+                            results["gemini_analysis"] = sync_text
+                            selected_model_final = model_name
+                            print(f"[Gemini] Synthesis success with {model_name}")
+                            break
+                    except Exception as e:
+                        print(f"[Gemini] Synthesis fallback: {model_name} failed: {e}")
+                        continue
+                
+                if not sync_text:
+                    results["gemini_analysis"] = f"Investigation complete. Extracted Text: {translated_context[:300]}... [Note: Full AI synthesis was limited by API status]."
+                    selected_model_final = results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "None"
 
                 # Update model name to include Tavily as requested in screenshot
-                results["gemini_model_used"] = f"Model {model_to_use.upper()} and Tavily"
+                results["gemini_model_used"] = f"Model {selected_model_final.upper()} and Tavily"
 
                 # Parse verdict from synthesis
                 lines = sync_text.split('\n')
