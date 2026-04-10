@@ -257,7 +257,7 @@ async def analyze(file: UploadFile = File(...)):
         if genai_client:
             try:
                 print("[Gemini] Phase 1: OCR and Initial Analysis...")
-                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"]
+                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
                 ocr_prompt = "Extract all text from this image accurately. If there is non-English text, translate it to English. Also, provide a 1-sentence summary of what is happening in the image."
                 
                 from google.genai.types import Content, Part
@@ -353,7 +353,7 @@ TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'W
 Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
 
                 # Re-implement Model Fallback loop for Synthesis Phase
-                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-1.5-pro", "gemini-1.5-flash"]
+                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
                 sync_text = ""
                 selected_model_final = "N/A"
                 

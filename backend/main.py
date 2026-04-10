@@ -448,7 +448,7 @@ async def analyze(file: UploadFile = File(...)):
         if genai_client:
             try:
                 print("[Gemini] Phase 1: OCR and Initial Analysis...")
-                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"]
+                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
                 ocr_prompt = "Extract all text from this image accurately. If there is non-English text, translate it to English. Also, provide a 1-sentence summary of what is happening in the image."
                 
                 selected_model = None
@@ -519,22 +519,36 @@ INPUT - SOURCES:
 TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
 Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
 
-                    # Note: Local SDK usage might differ slightly in how system_instruction is passed
-                    # but for consistency with VeriLens style, we implement it in the prompt or config
-                    response_sync = gemini_generate_retry(
-                        selected_model, 
-                        [system_instruction_local, image, synthesis_prompt], 
-                        config={"temperature": 0}
-                    )
-                    sync_text = response_sync.text
+                    # Re-implement Model Fallback loop for Synthesis Phase
+                    model_names_sync = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
+                    sync_text = ""
+                    selected_model_final = "N/A"
                     
-                    if sync_text and len(sync_text) > 20:
-                        results["gemini_analysis"] = sync_text
-                    else:
-                        results["gemini_analysis"] = f"Investigation complete. Source context: {translated_context[:300]}..."
+                    for model_name in model_names_sync:
+                        try:
+                            print(f"[Gemini] Synthesis attempting with {model_name}...")
+                            model_obj = genai_client.GenerativeModel(model_name)
+                            response_sync = gemini_generate_retry(
+                                model_obj, 
+                                [system_instruction_local, image, synthesis_prompt], 
+                                config={"temperature": 0}
+                            )
+                            sync_text = response_sync.text
+                            if sync_text and len(sync_text) > 20:
+                                results["gemini_analysis"] = sync_text
+                                selected_model_final = model_name
+                                print(f"[Gemini] Synthesis success with {model_name}")
+                                break
+                        except Exception as e:
+                            print(f"[Gemini] Synthesis fallback: {model_name} failed: {e}")
+                            continue
+
+                    if not sync_text:
+                        results["gemini_analysis"] = f"Investigation complete. Source context: {translated_context[:300]}... [Note: Full AI synthesis limited by API status]."
+                        selected_model_final = results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "None"
                     
                     # Update model name to include Tavily as requested
-                    results["gemini_model_used"] = f"Model {results['gemini_model_used'].upper()} and Tavily"
+                    results["gemini_model_used"] = f"Model {selected_model_final.upper()} and Tavily"
 
                     g_cv, g_av = "NON-RUMOR", "NON-RUMOR"
                     for line in sync_text.split('\n'):
