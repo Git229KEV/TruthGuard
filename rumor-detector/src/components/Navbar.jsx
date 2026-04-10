@@ -15,6 +15,9 @@ const Navbar = () => {
           <Link to="/" className={`nav-link ${location.pathname === '/' ? 'active' : ''}`}>
             Home
           </Link>
+          <Link to="/how-we-analyze" className={`nav-link ${location.pathname === '/how-we-analyze' ? 'active' : ''}`}>
+            How we Analyze
+          </Link>
           <Link to="/verify" className={`nav-link ${location.pathname === '/verify' ? 'active' : ''}`}>
             Verify News
           </Link>
