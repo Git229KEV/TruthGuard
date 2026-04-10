@@ -321,13 +321,25 @@ async def analyze(file: UploadFile = File(...)):
         # --- PILLAR 5: FINAL SYNTHESIS (Gemini Phase 2) ---
         if genai_client:
             try:
-                print("[Gemini] Phase 2: Synthesis Reporting...")
-                # PREPARE INPUTS: Image + Translated Text + Tavily context
+                system_instruction = """You are a professional Multimodal Fact-Checker specializing in digital news verification. Your goal is to analyze images to detect rumors, manipulation, or misinformation.
+
+Format your response STRICTLY as follows:
+1. **CLAIM VERDICT:** [TRUE / FALSE / MISLEADING / UNVERIFIED]
+2. **REPORT AUTHENTICITY:** [AUTHENTIC / MANIPULATED / AI-GENERATED]
+3. **DETAILED ANALYSIS:** Start with a section titled 'Image Authenticity' followed by a professional breakdown of visual consistency, AI artifacts, and contextual extraction.
+4. **SEARCH EVIDENCE:** Findings from the provided web research snippets.
+5. **WHY:** A final summary of exactly why these verdicts were reached.
+
+Your Analysis Protocol:
+- Distinguish between the 'Claim' (what is being said) and the 'Report' (the image itself).
+- Visual Consistency: Check for AI artifacts, inconsistent lighting, or news template patterns.
+- Contextual Extraction: Identify the core claim, location, and key figures.
+- Search Strategy: Verify claims against the provided web research research snippets."""
+
                 translated_context = results["translated"] if results["translated"] else "No text extracted."
                 search_context = results["tavily_analysis"] if results["tavily_analysis"] else "No web search results available."
                 
-                synthesis_prompt = f"""You are a professional Fact-Checking Investigative Journalist.
-
+                synthesis_prompt = f"""
 INPUT - TRANSLATED TEXT FROM IMAGE:
 {translated_context}
 
@@ -338,29 +350,31 @@ INPUT - SOURCES:
 {str(results['sources'])}
 
 TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
-Give your OWN forensic result based on both visual evidence and textual claim.
-
-Return your analysis in this EXACT format:
-**CLAIM VERDICT:** [TRUE/FALSE/MISLEADING]
-**REPORT AUTHENTICITY:** [AUTHENTIC/MANIPULATED/SUSPICIOUS]
-**DETAILED ANALYSIS:** [Write a professional, 2-3 paragraph investigative analysis. Do not use placeholders. Be specific about the visual evidence and the search findings.]"""
+Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
 
                 # Re-use the best model from Phase 1
+                model_to_use = results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "gemini-3-flash-preview"
                 response_sync = genai_client.models.generate_content(
-                    model=results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "gemini-3-flash-preview",
+                    model=model_to_use,
                     contents=Content(parts=[
                         Part(inline_data={"mime_type": "image/jpeg", "data": img_base64}),
                         Part(text=synthesis_prompt)
                     ]),
-                    config={"temperature": 0, "max_output_tokens": 2048}
+                    config={
+                        "system_instruction": system_instruction,
+                        "temperature": 0, 
+                        "max_output_tokens": 2048
+                    }
                 )
                 
                 sync_text = response_sync.text
                 if sync_text and len(sync_text) > 20:
                     results["gemini_analysis"] = sync_text
                 else:
-                    # Fallback if result is too short
-                    results["gemini_analysis"] = f"Forensic analysis based on extracted content: {translated_context[:300]}..."
+                    results["gemini_analysis"] = f"Investigation complete. Extracted Text: {translated_context[:300]}..."
+
+                # Update model name to include Tavily as requested in screenshot
+                results["gemini_model_used"] = f"Model {model_to_use.upper()} and Tavily"
 
                 # Parse verdict from synthesis
                 lines = sync_text.split('\n')

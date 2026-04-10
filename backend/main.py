@@ -487,11 +487,26 @@ async def analyze(file: UploadFile = File(...)):
                 # --- PILLAR 5: FINAL SYNTHESIS (Gemini Phase 2) ---
                 if selected_model:
                     print("[Gemini] Phase 2: Synthesis Reporting...")
+                    
+                    system_instruction_local = """You are a professional Multimodal Fact-Checker specializing in digital news verification. Your goal is to analyze images to detect rumors, manipulation, or misinformation.
+
+Format your response STRICTLY as follows:
+1. **CLAIM VERDICT:** [TRUE / FALSE / MISLEADING / UNVERIFIED]
+2. **REPORT AUTHENTICITY:** [AUTHENTIC / MANIPULATED / AI-GENERATED]
+3. **DETAILED ANALYSIS:** Start with a section titled 'Image Authenticity' followed by a professional breakdown of visual consistency, AI artifacts, and contextual extraction.
+4. **SEARCH EVIDENCE:** Findings from the provided web research snippets.
+5. **WHY:** A final summary of exactly why these verdicts were reached.
+
+Your Analysis Protocol:
+- Distinguish between the 'Claim' (what is being said) and the 'Report' (the image itself).
+- Visual Consistency: Check for AI artifacts, inconsistent lighting, or news template patterns.
+- Contextual Extraction: Identify the core claim, location, and key figures.
+- Search Strategy: Verify claims against the provided web research research snippets."""
+
                     translated_context = results["translated"] if results["translated"] else "No text extracted."
                     search_context = results["tavily_analysis"] if results["tavily_analysis"] else "No web search available."
                     
-                    synthesis_prompt = f"""You are a professional Fact-Checking Investigative Journalist.
-
+                    synthesis_prompt = f"""
 INPUT - TRANSLATED TEXT FROM IMAGE:
 {translated_context}
 
@@ -502,14 +517,15 @@ INPUT - SOURCES:
 {str(results['sources'])}
 
 TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
-Give your OWN forensic result based on both visual evidence and textual claim.
+Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
 
-Return your analysis in this EXACT format:
-**CLAIM VERDICT:** [TRUE/FALSE/MISLEADING]
-**REPORT AUTHENTICITY:** [AUTHENTIC/MANIPULATED/SUSPICIOUS]
-**DETAILED ANALYSIS:** [Write a professional, 2-3 paragraph investigative analysis. Do not use placeholders. Be specific about the visual evidence and the search findings.]"""
-
-                    response_sync = gemini_generate_retry(selected_model, [image, synthesis_prompt], config={"temperature": 0})
+                    # Note: Local SDK usage might differ slightly in how system_instruction is passed
+                    # but for consistency with VeriLens style, we implement it in the prompt or config
+                    response_sync = gemini_generate_retry(
+                        selected_model, 
+                        [system_instruction_local, image, synthesis_prompt], 
+                        config={"temperature": 0}
+                    )
                     sync_text = response_sync.text
                     
                     if sync_text and len(sync_text) > 20:
@@ -517,6 +533,9 @@ Return your analysis in this EXACT format:
                     else:
                         results["gemini_analysis"] = f"Investigation complete. Source context: {translated_context[:300]}..."
                     
+                    # Update model name to include Tavily as requested
+                    results["gemini_model_used"] = f"Model {results['gemini_model_used'].upper()} and Tavily"
+
                     g_cv, g_av = "NON-RUMOR", "NON-RUMOR"
                     for line in sync_text.split('\n'):
                         if 'CLAIM VERDICT:' in line.upper() and any(x in line.upper() for x in ["FALSE", "FAKE", "MISLEADING"]): g_cv = "RUMOR"
