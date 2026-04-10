@@ -8,6 +8,7 @@ import os
 import time
 import threading
 import re
+import typing
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -355,14 +356,36 @@ def parse_visual_label(raw_label):
         return "RUMOR"
     return "UNKNOWN"
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception),
-    reraise=True
-)
-def gemini_generate_retry(model, content, config=None):
-    return model.generate_content(content, generation_config=config)
+class NewsData(typing.TypedDict):
+    headline: str
+    description: str
+
+class VerificationResultSchema(typing.TypedDict):
+    isRumor: bool
+    reason: str
+
+MODELS = [
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+]
+
+def try_generate_content(params, model_index=0):
+    if model_index >= len(MODELS):
+        raise Exception("All Gemini models failed.")
+    
+    model_name = MODELS[model_index]
+    try:
+        model = genai_client.GenerativeModel(model_name)
+        # Handle different param structures
+        content = params.get("contents")
+        config = params.get("config", {})
+        
+        response = model.generate_content(content, generation_config=config)
+        return {"text": response.text or "", "model": model_name}
+    except Exception as e:
+        print(f"[WARN] Model {model_name} failed, trying next... {e}")
+        return try_generate_content(params, model_index + 1)
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -444,120 +467,95 @@ async def analyze(file: UploadFile = File(...)):
             except Exception as e:
                 print(f"XLM Error: {e}")
 
-        # --- PILLAR 3: VISION & OCR (Gemini Phase 1) ---
+        # --- NEW PILLAR 3: EXTRACTION (Gemini) ---
+        extraction_data = {"headline": "N/A", "description": "N/A"}
         if genai_client:
             try:
-                print("[Gemini] Phase 1: OCR and Initial Analysis...")
-                model_names = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
-                ocr_prompt = "Extract all text from this image accurately. If there is non-English text, translate it to English. Also, provide a 1-sentence summary of what is happening in the image."
+                print("[Gemini] Extracting news data...")
+                extraction_prompt = "Analyze this news card image. Extract the headline and the description. Return the result in JSON format with keys \"headline\" and \"description\"."
                 
-                selected_model = None
-                for model_name in model_names:
-                    try:
-                        model = genai_client.GenerativeModel(model_name)
-                        response = gemini_generate_retry(model, [image, ocr_prompt], config={"temperature": 0})
-                        results["original_text"] = response.text.strip()
-                        results["translated"] = response.text.strip() # Populate the frontend 'translated' field
-                        results["gemini_model_used"] = model_name
-                        selected_model = model
-                        print(f"[Gemini] OCR success with {model_name}")
-                        break
-                    except: continue
+                extract_res = try_generate_content({
+                    "contents": [image, extraction_prompt],
+                    "config": {
+                        "response_mime_type": "application/json",
+                        "response_schema": NewsData
+                    }
+                })
+                extraction_data = json.loads(extract_res["text"])
+                results["original_text"] = extraction_data.get("headline", "")
+                results["translated"] = extraction_data.get("description", "")
+                results["gemini_model_used"] = extract_res["model"]
+                print(f"[Gemini] Extracted: {extraction_data['headline'][:50]}...")
+            except Exception as e:
+                print(f"Extraction Error: {e}")
 
-                # --- PILLAR 4: WEB RESEARCH (Tavily) ---
-                if tavily_client:
-                    print("[Tavily] Running independent web research...")
-                    raw_query = results["original_text"]
-                    clean_query = re.sub(r'\[.*?\]', '', raw_query).strip()
-                    clean_query = clean_query.replace("**", "").replace('"', '').strip()
-                    search_query = clean_query[:300] if len(clean_query) > 10 else "latest fact check " + clean_query
-                    if not search_query.strip(): search_query = "latest news verification"
-                    
-                    tav_res = tavily_client.search(query=search_query, search_depth="advanced", include_answer="advanced", max_results=5)
-                    results["sources"] = [{"title": r.get("title"), "url": r.get("url")} for r in tav_res.get("results", [])]
-                    results["tavily_analysis"] = tav_res.get("answer", "Web search completed.")
-                    
-                    # Independent Scoring
-                    combined_tav = (results["tavily_analysis"] + " " + " ".join([r.get("content", "") for r in tav_res.get("results", [])[:3]])).lower()
-                    r_score = sum(2 for p in ["false claim", "fake news", "hoax", "misinformation", "debunked", "fabricated"] if p in combined_tav)
-                    f_score = sum(2 for p in ["confirmed by", "official statement", "verified", "true"] if p in combined_tav)
-                    results["tavily"] = "RUMOR" if r_score > f_score + 1 else "NON-RUMOR"
-                    print(f"[Tavily] Verdict: {results['tavily']}")
+        # --- NEW PILLAR 4: INTERNAL ANALYSIS (Gemini) ---
+        if genai_client and extraction_data["headline"] != "N/A":
+            try:
+                print("[Gemini] Internal Analysis...")
+                internal_prompt = f"""You are a news fact-checker. Analyze the following news:
+Headline: {extraction_data['headline']}
+Description: {extraction_data['description']}
 
-                # --- PILLAR 5: FINAL SYNTHESIS (Gemini Phase 2) ---
-                if selected_model:
-                    print("[Gemini] Phase 2: Synthesis Reporting...")
-                    
-                    system_instruction_local = """You are a professional Multimodal Fact-Checker specializing in digital news verification. Your goal is to analyze images to detect rumors, manipulation, or misinformation.
+Determine if this is a rumor or non-rumor based on your internal knowledge.
 
-Format your response STRICTLY as follows:
-1. **CLAIM VERDICT:** [TRUE / FALSE / MISLEADING / UNVERIFIED]
-2. **REPORT AUTHENTICITY:** [AUTHENTIC / MANIPULATED / AI-GENERATED]
-3. **DETAILED ANALYSIS:** Start with a section titled 'Image Authenticity' followed by a professional breakdown of visual consistency, AI artifacts, and contextual extraction.
-4. **SEARCH EVIDENCE:** Findings from the provided web research snippets.
-5. **WHY:** A final summary of exactly why these verdicts were reached.
+CRITICAL DIRECTIVE: If your analysis identifies this as a "misconception", "false claim", "misinformation", "hoax", "fake", "debunked", or if there are any negative indicators regarding its truthfulness, you MUST classify it as a Rumor (isRumor: true).
 
-Your Analysis Protocol:
-- Distinguish between the 'Claim' (what is being said) and the 'Report' (the image itself).
-- Visual Consistency: Check for AI artifacts, inconsistent lighting, or news template patterns.
-- Contextual Extraction: Identify the core claim, location, and key figures.
-- Search Strategy: Verify claims against the provided web research research snippets."""
+Provide a clear reason for your conclusion.
+Return the result in JSON format with keys "isRumor" (boolean) and "reason" (string)."""
 
-                    translated_context = results["translated"] if results["translated"] else "No text extracted."
-                    search_context = results["tavily_analysis"] if results["tavily_analysis"] else "No web search available."
-                    
-                    synthesis_prompt = f"""
-INPUT - TRANSLATED TEXT FROM IMAGE:
-{translated_context}
+                analysis_res = try_generate_content({
+                    "contents": internal_prompt,
+                    "config": {
+                        "response_mime_type": "application/json",
+                        "response_schema": VerificationResultSchema
+                    }
+                })
+                analysis_data = json.loads(analysis_res["text"])
+                results["gemini"] = "RUMOR" if analysis_data.get("isRumor") else "NON-RUMOR"
+                results["gemini_analysis"] = analysis_data.get("reason", "")
+                print(f"[Gemini] Internal Verdict: {results['gemini']}")
+            except Exception as e:
+                print(f"Internal Analysis Error: {e}")
 
-INPUT - WEB RESEARCH SUMMARY:
-{search_context}
+        # --- NEW PILLAR 5: WEB RESEARCH (Tavily + Gemini) ---
+        if tavily_client and extraction_data["headline"] != "N/A":
+            try:
+                print("[Tavily] Running web research...")
+                search_query = f"{extraction_data['headline']} {extraction_data['description']}"[:300]
+                tav_res = tavily_client.search(query=search_query, search_depth="advanced", include_answer="advanced", max_results=5)
+                results["sources"] = [{"title": r.get("title"), "url": r.get("url")} for r in tav_res.get("results", [])]
+                tavily_data = tav_res
+                
+                print("[Gemini] Analyzing Tavily results...")
+                tavily_prompt = f"""You are a news fact-checker. Analyze the following news and the search results from Tavily:
 
-INPUT - SOURCES:
-{str(results['sources'])}
+News Headline: {extraction_data['headline']}
+News Description: {extraction_data['description']}
 
-TASK: Analyze the provided image pixels AND the 'Translated Text' against the 'Web Research' results. determine if the content is a RUMOR or NON-RUMOR.
-Give your OWN forensic result based on both visual evidence and textual claim. Follow the system protocol for the 5-point report."""
+Tavily Search Results:
+{json.dumps(tavily_data, indent=2)}
 
-                    # Re-implement Model Fallback loop for Synthesis Phase
-                    model_names_sync = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
-                    sync_text = ""
-                    selected_model_final = "N/A"
-                    
-                    for model_name in model_names_sync:
-                        try:
-                            print(f"[Gemini] Synthesis attempting with {model_name}...")
-                            model_obj = genai_client.GenerativeModel(model_name)
-                            response_sync = gemini_generate_retry(
-                                model_obj, 
-                                [system_instruction_local, image, synthesis_prompt], 
-                                config={"temperature": 0}
-                            )
-                            sync_text = response_sync.text
-                            if sync_text and len(sync_text) > 20:
-                                results["gemini_analysis"] = sync_text
-                                selected_model_final = model_name
-                                print(f"[Gemini] Synthesis success with {model_name}")
-                                break
-                        except Exception as e:
-                            print(f"[Gemini] Synthesis fallback: {model_name} failed: {e}")
-                            continue
+Based on these search results, determine if the news is a rumor or non-rumor.
 
-                    if not sync_text:
-                        results["gemini_analysis"] = f"Investigation complete. Source context: {translated_context[:300]}... [Note: Full AI synthesis limited by API status]."
-                        selected_model_final = results["gemini_model_used"] if results["gemini_model_used"] != "N/A" else "None"
-                    
-                    # Update model name to include Tavily as requested
-                    results["gemini_model_used"] = f"Model {selected_model_final.upper()} and Tavily"
+CRITICAL DIRECTIVE: If the search results or your analysis contain terms like "misconception", "false claim", "misinformation", "hoax", "fake", "debunked", or any negative indicators that the claim is not true, you MUST classify it as a Rumor (isRumor: true).
 
-                    g_cv, g_av = "NON-RUMOR", "NON-RUMOR"
-                    for line in sync_text.split('\n'):
-                        if 'CLAIM VERDICT:' in line.upper() and any(x in line.upper() for x in ["FALSE", "FAKE", "MISLEADING"]): g_cv = "RUMOR"
-                        if 'REPORT AUTHENTICITY:' in line.upper() and any(x in line.upper() for x in ["MANIPULATED", "SUSPICIOUS", "FAKE"]): g_av = "RUMOR"
-                    
-                    results["gemini"] = "RUMOR" if (g_cv == "RUMOR" or g_av == "RUMOR") else "NON-RUMOR"
-                    results["claim_verdict"], results["report_verdict"] = g_cv, g_av
-                    print(f"[Gemini] Synthesis: {results['gemini']}")
+Provide a clear reason for your conclusion based on the evidence in the search results.
+Return the result in JSON format with keys "isRumor" (boolean) and "reason" (string)."""
+
+                tav_analysis_res = try_generate_content({
+                    "contents": tavily_prompt,
+                    "config": {
+                        "response_mime_type": "application/json",
+                        "response_schema": VerificationResultSchema
+                    }
+                })
+                tav_analysis_data = json.loads(tav_analysis_res["text"])
+                results["tavily"] = "RUMOR" if tav_analysis_data.get("isRumor") else "NON-RUMOR"
+                results["tavily_analysis"] = tav_analysis_data.get("reason", "")
+                print(f"[Tavily] Research Verdict: {results['tavily']}")
+            except Exception as e:
+                print(f"Tavily Analysis Error: {e}")
 
             except Exception as e:
                 print(f"Gemini/Tavily Pipeline Error: {e}")

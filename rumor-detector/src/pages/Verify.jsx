@@ -286,7 +286,7 @@ const Verify = () => {
                           }
                         />
 
-                        {/* M2: XLM-RoBERTa Text Analysis */}
+                         {/* M2: XLM-RoBERTa Text Analysis */}
                         <ModelResultCard 
                           modelId="M2"
                           modelName="XLM-RoBERTa"
@@ -298,7 +298,13 @@ const Verify = () => {
                             : "Textual content follows standard journalistic patterns for legitimate news reporting."
                           }
                         />
+                      </div>
 
+                      <div className="model-group-header">
+                        <span className="model-badge">AI FORENSICS: {detailedResult.gemini_model_used || "Gemini 3 Flash"}</span>
+                      </div>
+
+                      <div className="model-results-grid">
                         {/* M3: Gemini AI Forensic */}
                         <ModelResultCard 
                           modelId="M3"
