@@ -87,7 +87,7 @@ const HowWeAnalyze = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <div style={{ padding: '2px 6px', background: '#8b5cf6', borderRadius: '2px', fontSize: '0.6rem' }}>CLS</div>
                 <div className="plus-sign" style={{ fontSize: '0.8rem' }}>+</div>
-                <div style={{ width: '20px', height: '10px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px' }} />
+                <div style={{ width: '20px', height: '10px', background: 'var(--surface-1)', borderRadius: '2px' }} />
               </div>
             </PipelineStage>
 

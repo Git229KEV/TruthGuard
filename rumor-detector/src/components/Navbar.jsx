@@ -1,7 +1,9 @@
 import { Link, useLocation } from 'react-router-dom'
+import { useTheme } from '../context/ThemeContext'
 
 const Navbar = () => {
   const location = useLocation()
+  const { theme, toggleTheme } = useTheme()
 
   return (
     <nav className="navbar">
@@ -21,6 +23,14 @@ const Navbar = () => {
           <Link to="/verify" className={`nav-link ${location.pathname === '/verify' ? 'active' : ''}`}>
             Verify News
           </Link>
+          
+          <button 
+            className="theme-toggle" 
+            onClick={toggleTheme}
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
         </div>
       </div>
     </nav>
